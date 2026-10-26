@@ -1,391 +1,889 @@
--- =====================================================================
--- IATA 4U (Intelligent Academic Teaching Assistant)
--- Multi-agency database migration — v1
---
--- Paste into Supabase > SQL Editor and run once.
--- Additive: keeps your existing `applications` rows and `documents` bucket.
--- Existing submissions are assigned to a "Sky Touch Education" agency,
--- and the current live form keeps working (see trigger in section 4).
--- Safe to re-run: uses IF NOT EXISTS / DROP ... IF EXISTS throughout.
--- =====================================================================
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IATA Database</title>
+<meta name="description" content="Intelligent Academic Teaching Assistant — branded student application portals for education agents.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+/* ================================================================
+   IATA Database — white-label student application platform
+   Intelligent Academic Teaching Assistant
+   ================================================================ */
+:root {
+  --brand: #1e3a8a;
+  --accent: #f59e0b;
+  --bg: #f6f7fb;
+  --surface: #ffffff;
+  --surface-2: #f1f3f9;
+  --text: #121826;
+  --muted: #5b6475;
+  --line: #e2e6ef;
+  --danger: #c0352b;
+  --ok: #1f8a4c;
+  --radius: 14px;
+  --shadow: 0 1px 2px rgba(16,24,40,.05), 0 8px 24px rgba(16,24,40,.06);
+  --ease: cubic-bezier(.2,.7,.2,1);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1117; --surface: #151b24; --surface-2: #1c2430;
+    --text: #e8ecf3; --muted: #9aa4b5; --line: #273141;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d1117; --surface: #151b24; --surface-2: #1c2430;
+  --text: #e8ecf3; --muted: #9aa4b5; --line: #273141;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: "Plus Jakarta Sans", system-ui, -apple-system, Segoe UI, sans-serif;
+  font-size: 16px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+}
+a { color: var(--brand); }
+img { max-width: 100%; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+.narrow { max-width: 640px; margin: 0 auto; padding: 0 16px; }
 
-begin;
+/* ---------- Buttons & inputs ---------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  border: 0; border-radius: 10px; padding: 12px 18px; font: inherit; font-weight: 600;
+  cursor: pointer; text-decoration: none; transition: transform .15s var(--ease), opacity .15s;
+  background: var(--brand); color: #fff; min-height: 44px;
+}
+.btn:hover { opacity: .92; }
+.btn:active { transform: translateY(1px); }
+.btn.secondary { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); }
+.btn.ghost { background: transparent; color: var(--text); }
+.btn.small { padding: 8px 12px; min-height: 36px; font-size: 14px; }
+.btn[disabled] { opacity: .55; cursor: not-allowed; }
+label { display: block; font-weight: 600; font-size: 14px; margin: 14px 0 6px; }
+.hint { color: var(--muted); font-size: 13px; font-weight: 400; }
+input, select, textarea {
+  width: 100%; font: inherit; color: var(--text); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; min-height: 44px;
+}
+input:focus, select:focus, textarea:focus, .btn:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--brand) 35%, transparent); outline-offset: 1px; border-color: var(--brand);
+}
+input[type="color"] { padding: 4px; height: 44px; width: 64px; }
+input[type="checkbox"] { width: 20px; height: 20px; min-height: 0; accent-color: var(--brand); }
+.row { display: grid; gap: 0 14px; grid-template-columns: 1fr 1fr; }
+@media (max-width: 560px) { .row { grid-template-columns: 1fr; } }
+.error { color: var(--danger); font-size: 14px; margin-top: 10px; min-height: 1em; }
 
-create extension if not exists pgcrypto;
+/* ---------- Cards & layout ---------- */
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 22px; }
+.stack > * + * { margin-top: 16px; }
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; }
+.logo-mark { display: flex; align-items: center; gap: 10px; font-weight: 800; text-decoration: none; color: var(--text); }
+.logo-mark .dot { width: 32px; height: 32px; border-radius: 9px; background: var(--brand); display: grid; place-items: center; color: #fff; font-size: 14px; }
+.logo-mark small { display: block; font-weight: 500; color: var(--muted); font-size: 11px; letter-spacing: .02em; }
+.demo-banner { background: color-mix(in srgb, var(--accent) 18%, var(--surface)); border-bottom: 1px solid var(--line); font-size: 13px; text-align: center; padding: 8px 16px; }
 
--- ---------------------------------------------------------------------
--- 0. Shared helper: keep updated_at fresh
--- ---------------------------------------------------------------------
-create or replace function public.set_updated_at()
-returns trigger language plpgsql as $$
-begin
-  new.updated_at := now();
-  return new;
-end $$;
+/* ---------- Landing ---------- */
+.hero { padding: 48px 0 32px; }
+.hero h1 { font-size: clamp(30px, 6vw, 52px); line-height: 1.08; margin: 0 0 14px; letter-spacing: -.02em; }
+.hero p.lede { font-size: 18px; color: var(--muted); max-width: 620px; margin: 0 0 24px; }
+.eyebrow { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--brand); background: color-mix(in srgb, var(--brand) 10%, transparent); padding: 6px 10px; border-radius: 99px; margin-bottom: 16px; }
+.cta { display: flex; flex-wrap: wrap; gap: 10px; }
+.steps-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 28px 0 48px; }
+.steps-grid .num { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #111; display: grid; place-items: center; font-weight: 800; font-size: 14px; margin-bottom: 10px; }
+.steps-grid h3 { margin: 0 0 6px; font-size: 17px; }
+.steps-grid p { margin: 0; color: var(--muted); font-size: 15px; }
 
--- ---------------------------------------------------------------------
--- 1. AGENCIES — one row per education agent (each customer)
--- ---------------------------------------------------------------------
-create table if not exists public.agencies (
-  id             uuid primary key default gen_random_uuid(),
-  name           text not null check (length(name) between 2 and 120),
-  slug           text not null unique
-                 check (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' and length(slug) between 3 and 50),
-  logo_path      text,                       -- path inside the agency-logos bucket
-  primary_colour text not null default '#1e3a8a' check (primary_colour ~ '^#[0-9a-fA-F]{6}$'),
-  accent_colour  text not null default '#f59e0b' check (accent_colour  ~ '^#[0-9a-fA-F]{6}$'),
-  contact_email  text,
-  contact_phone  text,
-  website        text,
-  plan           text not null default 'trial' check (plan in ('trial', 'monthly', 'licence')),
-  is_active      boolean not null default true,
-  created_at     timestamptz not null default now(),
-  updated_at     timestamptz not null default now()
-);
+/* ---------- Application form ---------- */
+.brand-header { background: var(--brand); color: #fff; padding: 26px 0 64px; }
+.brand-header .agency { display: flex; align-items: center; gap: 14px; }
+.brand-header img.agency-logo { width: 56px; height: 56px; border-radius: 12px; object-fit: contain; background: #fff; padding: 6px; }
+.brand-header .initials { width: 56px; height: 56px; border-radius: 12px; background: rgba(255,255,255,.18); display: grid; place-items: center; font-weight: 800; font-size: 20px; }
+.brand-header h1 { margin: 0; font-size: 22px; }
+.brand-header p { margin: 2px 0 0; opacity: .85; font-size: 14px; }
+.form-shell { margin-top: -44px; padding-bottom: 48px; }
+.progress { display: flex; gap: 6px; margin-bottom: 18px; }
+.progress span { flex: 1; height: 6px; border-radius: 99px; background: var(--line); transition: background .3s; }
+.progress span.done { background: var(--accent); }
+.step-title { margin: 0 0 4px; font-size: 22px; }
+.step-sub { margin: 0 0 6px; color: var(--muted); }
+.nav-row { display: flex; justify-content: space-between; gap: 10px; margin-top: 24px; }
+.file-drop { border: 1.5px dashed var(--line); border-radius: 12px; padding: 14px; background: var(--surface-2); }
+.file-drop input { background: transparent; border: 0; padding: 4px 0; min-height: 0; }
+.file-drop .chosen { font-size: 13px; color: var(--ok); margin-top: 4px; }
+.review dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; font-size: 15px; }
+.review dt { color: var(--muted); }
+.review dd { margin: 0; word-break: break-word; }
+.consent { display: flex; gap: 10px; align-items: flex-start; margin-top: 18px; font-size: 14px; }
+.ref-box { font-size: 26px; font-weight: 800; letter-spacing: .04em; background: var(--surface-2); border-radius: 12px; padding: 14px; text-align: center; margin: 14px 0; }
+.powered { text-align: center; color: var(--muted); font-size: 12px; margin-top: 18px; }
 
-drop trigger if exists agencies_set_updated_at on public.agencies;
-create trigger agencies_set_updated_at
-  before update on public.agencies
-  for each row execute function public.set_updated_at();
+/* ---------- Dashboard ---------- */
+.dash-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 18px 0; }
+.dash-head .agency { display: flex; align-items: center; gap: 12px; }
+.dash-head img, .dash-head .initials { width: 44px; height: 44px; border-radius: 10px; object-fit: contain; background: var(--brand); color: #fff; display: grid; place-items: center; font-weight: 800; }
+.dash-head h1 { font-size: 20px; margin: 0; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 18px; overflow-x: auto; }
+.tabs button { background: none; border: 0; font: inherit; font-weight: 600; color: var(--muted); padding: 12px 14px; border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; }
+.tabs button.active { color: var(--brand); border-bottom-color: var(--brand); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.stat b { display: block; font-size: 24px; }
+.stat span { color: var(--muted); font-size: 13px; }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.chip { border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 99px; padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.chip.active { background: var(--brand); color: #fff; border-color: var(--brand); }
+.app-list { display: grid; gap: 8px; }
+.app-item { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px; cursor: pointer; text-align: left; font: inherit; color: inherit; width: 100%; }
+.app-item:hover { border-color: var(--brand); }
+.app-item .name { font-weight: 700; }
+.app-item .meta { color: var(--muted); font-size: 13px; }
+.badge { display: inline-block; font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 99px; background: var(--surface-2); white-space: nowrap; }
+.badge.new { background: #e0ecff; color: #1d4ed8; }
+.badge.reviewing { background: #fff3d6; color: #92400e; }
+.badge.more_info_needed { background: #fde7e5; color: #b42318; }
+.badge.accepted { background: #dcf5e6; color: #146c3a; }
+.badge.rejected { background: #ececec; color: #444; }
+.badge.withdrawn { background: #ececec; color: #666; }
+.empty { text-align: center; color: var(--muted); padding: 40px 16px; }
 
--- ---------------------------------------------------------------------
--- 2. AGENCY MEMBERS — which logged-in users belong to which agency
--- ---------------------------------------------------------------------
-create table if not exists public.agency_members (
-  agency_id  uuid not null references public.agencies(id) on delete cascade,
-  user_id    uuid not null references auth.users(id) on delete cascade,
-  role       text not null default 'staff' check (role in ('owner', 'staff')),
-  created_at timestamptz not null default now(),
-  primary key (agency_id, user_id)
-);
-create index if not exists agency_members_user_id_idx on public.agency_members(user_id);
+/* Drawer */
+.overlay { position: fixed; inset: 0; background: rgba(10,14,22,.45); opacity: 0; transition: opacity .25s; z-index: 40; }
+.overlay.show { opacity: 1; }
+.drawer { position: fixed; top: 0; right: 0; height: 100%; width: min(560px, 100%); background: var(--bg); z-index: 50; overflow-y: auto; transform: translateX(100%); transition: transform .3s var(--ease), opacity .3s; box-shadow: -12px 0 32px rgba(0,0,0,.15); }
+.drawer.show { transform: none; }
+.drawer-head { position: sticky; top: 0; background: var(--bg); border-bottom: 1px solid var(--line); padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; gap: 10px; z-index: 1; }
+.drawer-body { padding: 16px; }
+.doc-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.note { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 14px; }
+.note time { display: block; color: var(--muted); font-size: 12px; }
+.share-link { display: flex; gap: 8px; }
+.share-link input { flex: 1; }
+.preview-chip { display: flex; align-items: center; gap: 10px; padding: 14px; border-radius: 12px; color: #fff; background: var(--brand); }
+.preview-chip .pill { background: var(--accent); color: #111; border-radius: 99px; padding: 4px 10px; font-size: 12px; font-weight: 700; }
+.toast { position: fixed; left: 50%; bottom: 20px; transform: translate(-50%, 20px); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 14px; opacity: 0; transition: opacity .25s, transform .25s; z-index: 60; pointer-events: none; }
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
 
--- ---------------------------------------------------------------------
--- 3. Security helper functions (SECURITY DEFINER avoids RLS recursion)
--- ---------------------------------------------------------------------
-create or replace function public.is_agency_member(p_agency uuid)
-returns boolean language sql stable security definer set search_path = public as $$
-  select exists (
-    select 1 from public.agency_members
-    where agency_id = p_agency and user_id = auth.uid()
-  );
-$$;
+/* Page entrance */
+.page { animation: rise .35s var(--ease) both; }
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 
-create or replace function public.is_agency_owner(p_agency uuid)
-returns boolean language sql stable security definer set search_path = public as $$
-  select exists (
-    select 1 from public.agency_members
-    where agency_id = p_agency and user_id = auth.uid() and role = 'owner'
-  );
-$$;
+/* Reduced motion: gentle fades instead of movement */
+@media (prefers-reduced-motion: reduce) {
+  .page { animation: fade .3s ease both; }
+  .drawer { transform: none; opacity: 0; visibility: hidden; transition: opacity .25s ease, visibility .25s; }
+  .drawer.show { opacity: 1; visibility: visible; }
+  .toast { transform: translate(-50%, 0); }
+  .btn:active { transform: none; }
+}
+</style>
+</head>
+<body>
+<div id="banner"></div>
+<main id="app"></main>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-create or replace function public.agency_is_active(p_agency uuid)
-returns boolean language sql stable security definer set search_path = public as $$
-  select exists (select 1 from public.agencies where id = p_agency and is_active);
-$$;
+<script>
+/* ================================================================
+   CONFIG — paste your Supabase details here (Project Settings → API).
+   Leave blank to run in DEMO MODE with sample data.
+   ================================================================ */
+const CONFIG = {
+  SUPABASE_URL: 'https://fippstyxdffsfdqyswhi.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_9ndIKh8eE4bgN8De5Mk4mA_sZSvhELL',
+  PLATFORM_NAME: 'IATA Database',
+  PLATFORM_TAGLINE: 'Intelligent Academic Teaching Assistant',
+  MAX_FILE_MB: 10
+};
 
--- Storage paths are text, so these take the first folder name as text
-create or replace function public.agency_folder_is_active(p_folder text)
-returns boolean language sql stable security definer set search_path = public as $$
-  select exists (select 1 from public.agencies where id::text = p_folder and is_active);
-$$;
+const DEMO = !(CONFIG.SUPABASE_URL && CONFIG.SUPABASE_ANON_KEY);
+const STATUSES = [
+  ['new', 'New'], ['reviewing', 'Reviewing'], ['more_info_needed', 'More info needed'],
+  ['accepted', 'Accepted'], ['rejected', 'Rejected'], ['withdrawn', 'Withdrawn']
+];
+const statusLabel = s => (STATUSES.find(x => x[0] === s) || [s, s])[1];
 
-create or replace function public.is_agency_member_folder(p_folder text)
-returns boolean language sql stable security definer set search_path = public as $$
-  select exists (
-    select 1 from public.agency_members
-    where agency_id::text = p_folder and user_id = auth.uid()
-  );
-$$;
+/* ---------------- Helpers ---------------- */
+const $ = (sel, root = document) => root.querySelector(sel);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const initials = name => (name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('');
+const slugify = s => s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50);
+const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+const fmtDateTime = d => d ? new Date(d).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 2600);
+}
+function makeReference() {
+  const d = new Date();
+  const date = d.getFullYear().toString().slice(2) + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const rnd = crypto.getRandomValues(new Uint8Array(5));
+  return 'APP-' + date + '-' + Array.from(rnd, b => chars[b % chars.length]).join('');
+}
+function applyBrand(agency) {
+  const r = document.documentElement.style;
+  r.setProperty('--brand', agency?.primary_colour || '#1e3a8a');
+  r.setProperty('--accent', agency?.accent_colour || '#f59e0b');
+}
+function fileExt(file) { return (file.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, ''); }
 
-create or replace function public.is_agency_owner_folder(p_folder text)
-returns boolean language sql stable security definer set search_path = public as $$
-  select exists (
-    select 1 from public.agency_members
-    where agency_id::text = p_folder and user_id = auth.uid() and role = 'owner'
-  );
-$$;
+/* ================================================================
+   DATA LAYER — same functions for demo mode and Supabase
+   ================================================================ */
+let sb = null;
+if (!DEMO) sb = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
 
--- ---------------------------------------------------------------------
--- 4. Seed Sky Touch + upgrade the existing APPLICATIONS table
--- ---------------------------------------------------------------------
-insert into public.agencies (name, slug)
-values ('Sky Touch Education', 'sky-touch')
-on conflict (slug) do nothing;
+const demo = {
+  user: null,
+  agencies: [{
+    id: 'demo-agency', name: 'Bright Path Education', slug: 'bright-path', logo_path: null,
+    primary_colour: '#1e3a8a', accent_colour: '#f59e0b',
+    contact_email: 'hello@brightpath.example', contact_phone: '020 0000 0000', website: '', is_active: true
+  }],
+  members: [],
+  applications: [
+    { id: 'a1', agency_id: 'demo-agency', reference: 'APP-261020-K7QX2', first_name: 'Amara', last_name: 'Okafor', email: 'amara@example.com', phone: '07700 900111', date_of_birth: '1998-04-12', nationality: 'Nigerian', address_line1: '12 Example Road', city: 'London', postcode: 'E1 1AA', uk_entry_date: '2024-09-02', employment_status: 'Part-time', employer: 'Café Co', job_title: 'Barista', education_level: 'A-levels or equivalent', institution: 'Lagos College', course_interest: 'Business Management', documents: {}, consent: true, status: 'new', created_at: '2026-10-20T10:12:00Z' },
+    { id: 'a2', agency_id: 'demo-agency', reference: 'APP-261018-M3TB9', first_name: 'Tomasz', last_name: 'Nowak', email: 'tomasz@example.com', phone: '07700 900222', date_of_birth: '1995-11-03', nationality: 'Polish', address_line1: '4 Sample Street', city: 'Croydon', postcode: 'CR0 1AA', uk_entry_date: '2019-06-14', employment_status: 'Full-time', employer: 'BuildRight Ltd', job_title: 'Site supervisor', education_level: 'Degree', institution: 'Warsaw University', course_interest: 'Construction Management', documents: {}, consent: true, status: 'reviewing', created_at: '2026-10-18T15:40:00Z' }
+  ],
+  notes: [{ id: 'n1', application_id: 'a2', body: 'Called to confirm start date — prefers January intake.', created_at: '2026-10-19T09:00:00Z' }],
+  files: {}
+};
 
--- New project: create the applications table (skipped if it already exists)
-create table if not exists public.applications (
-  id                uuid primary key default gen_random_uuid(),
-  reference         text unique,
-  first_name        text not null,
-  last_name         text not null,
-  email             text not null,
-  phone             text,
-  date_of_birth     date,
-  nationality       text,
-  address_line1     text,
-  city              text,
-  postcode          text,
-  uk_entry_date     date,
-  employment_status text,
-  employer          text,
-  job_title         text,
-  education_level   text,
-  institution       text,
-  course_interest   text,
-  documents         jsonb not null default '{}'::jsonb,
-  consent           boolean not null default false,
-  created_at        timestamptz not null default now()
-);
+const api = {
+  async getUser() {
+    if (DEMO) return demo.user;
+    const { data } = await sb.auth.getSession();
+    return data.session?.user || null;
+  },
+  async sendCode(email) {
+    if (DEMO) return;
+    const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: true } });
+    if (error) throw error;
+  },
+  async verifyCode(email, token) {
+    if (DEMO) {
+      demo.user = { id: 'demo-user', email };
+      if (!demo.members.length) demo.members.push({ agency_id: 'demo-agency', user_id: 'demo-user', role: 'owner' });
+      return demo.user;
+    }
+    const { data, error } = await sb.auth.verifyOtp({ email, token, type: 'email' });
+    if (error) throw error;
+    return data.user;
+  },
+  async signOut() {
+    if (DEMO) { demo.user = null; return; }
+    await sb.auth.signOut();
+  },
+  async myAgency(user) {
+    if (DEMO) {
+      const m = demo.members.find(x => x.user_id === user.id);
+      return m ? { ...demo.agencies.find(a => a.id === m.agency_id), role: m.role } : null;
+    }
+    const { data, error } = await sb.from('agency_members')
+      .select('role, agencies(*)').eq('user_id', user.id).limit(1).maybeSingle();
+    if (error) throw error;
+    return data ? { ...data.agencies, role: data.role } : null;
+  },
+  async createAgency(name, slug) {
+    if (DEMO) {
+      if (demo.agencies.some(a => a.slug === slug)) throw new Error('That link name is taken — try another.');
+      const id = 'demo-' + Date.now();
+      demo.agencies.push({ id, name, slug, logo_path: null, primary_colour: '#1e3a8a', accent_colour: '#f59e0b', is_active: true });
+      demo.members = demo.members.filter(m => m.user_id !== demo.user.id);
+      demo.members.push({ agency_id: id, user_id: demo.user.id, role: 'owner' });
+      return id;
+    }
+    const { data, error } = await sb.rpc('create_agency', { p_name: name, p_slug: slug });
+    if (error) throw new Error(error.code === '23505' ? 'That link name is taken — try another.' : error.message);
+    return data;
+  },
+  async updateAgency(id, fields) {
+    if (DEMO) { Object.assign(demo.agencies.find(a => a.id === id), fields); return; }
+    const { error } = await sb.from('agencies').update(fields).eq('id', id);
+    if (error) throw error;
+  },
+  async uploadLogo(agencyId, file) {
+    if (DEMO) { const url = URL.createObjectURL(file); demo.files[url] = file; return url; }
+    const path = `${agencyId}/logo-${Date.now()}.${fileExt(file)}`;
+    const { error } = await sb.storage.from('agency-logos').upload(path, file, { upsert: false, contentType: file.type });
+    if (error) throw error;
+    return path;
+  },
+  logoUrl(path) {
+    if (!path) return null;
+    if (DEMO) return path;
+    return sb.storage.from('agency-logos').getPublicUrl(path).data.publicUrl;
+  },
+  async getAgencyBySlug(slug) {
+    if (DEMO) return demo.agencies.find(a => a.slug === slug && a.is_active) || null;
+    const { data, error } = await sb.rpc('get_agency_by_slug', { p_slug: slug });
+    if (error) throw error;
+    return data?.[0] || null;
+  },
+  async submitApplication(agency, fields, files) {
+    const reference = makeReference();
+    const documents = {};
+    for (const [key, file] of Object.entries(files)) {
+      if (!file) continue;
+      if (DEMO) { const url = URL.createObjectURL(file); demo.files[url] = file; documents[key] = url; continue; }
+      const path = `${agency.id}/${reference}/${key}.${fileExt(file)}`;
+      const { error } = await sb.storage.from('documents').upload(path, file, { upsert: false, contentType: file.type });
+      if (error) throw new Error('Upload failed for ' + key.replace(/_/g, ' ') + ': ' + error.message);
+      documents[key] = path;
+    }
+    const row = { ...fields, agency_id: agency.id, reference, documents, consent: true, status: 'new' };
+    if (DEMO) {
+      demo.applications.unshift({ ...row, id: 'a' + Date.now(), created_at: new Date().toISOString() });
+      return reference;
+    }
+    // No .select() — students are allowed to submit but never read back.
+    const { error } = await sb.from('applications').insert(row);
+    if (error) throw error;
+    return reference;
+  },
+  async listApplications(agencyId) {
+    if (DEMO) return demo.applications.filter(a => a.agency_id === agencyId);
+    const { data, error } = await sb.from('applications').select('*')
+      .eq('agency_id', agencyId).order('created_at', { ascending: false });
+    if (error) throw error;
+    return data;
+  },
+  async updateStatus(id, status) {
+    if (DEMO) { demo.applications.find(a => a.id === id).status = status; return; }
+    const { error } = await sb.from('applications').update({ status }).eq('id', id);
+    if (error) throw error;
+  },
+  async listNotes(appId) {
+    if (DEMO) return demo.notes.filter(n => n.application_id === appId);
+    const { data, error } = await sb.from('application_notes').select('*')
+      .eq('application_id', appId).order('created_at');
+    if (error) throw error;
+    return data;
+  },
+  async addNote(appId, body) {
+    if (DEMO) { demo.notes.push({ id: 'n' + Date.now(), application_id: appId, body, created_at: new Date().toISOString() }); return; }
+    const { error } = await sb.from('application_notes').insert({ application_id: appId, body });
+    if (error) throw error;
+  },
+  async documentLinks(app) {
+    const out = [];
+    for (const [key, path] of Object.entries(app.documents || {})) {
+      if (DEMO) { out.push({ key, url: path }); continue; }
+      const { data } = await sb.storage.from('documents').createSignedUrl(path, 600);
+      if (data?.signedUrl) out.push({ key, url: data.signedUrl });
+    }
+    return out;
+  }
+};
 
-alter table public.applications add column if not exists agency_id  uuid references public.agencies(id) on delete restrict;
-alter table public.applications add column if not exists status     text not null default 'new';
-alter table public.applications add column if not exists updated_at timestamptz not null default now();
+/* ================================================================
+   ROUTER
+   ================================================================ */
+const app = $('#app');
+const state = { user: null, agency: null };
 
-do $$ begin
-  alter table public.applications
-    add constraint applications_status_check
-    check (status in ('new', 'reviewing', 'more_info_needed', 'accepted', 'rejected', 'withdrawn'));
-exception when duplicate_object then null;
-end $$;
+function go(hash) { location.hash = hash; }
+window.addEventListener('hashchange', route);
 
--- Backfill: every existing submission belongs to Sky Touch
-update public.applications
-set agency_id = (select id from public.agencies where slug = 'sky-touch')
-where agency_id is null;
+async function route() {
+  const hash = location.hash.replace(/^#\/?/, '');
+  const [page, param] = hash.split('/');
+  window.scrollTo(0, 0);
+  try {
+    if (page === 'apply' && param) return renderApply(decodeURIComponent(param));
+    if (page === 'login') return renderLogin();
+    if (page === 'setup' || page === 'dashboard') {
+      state.user = await api.getUser();
+      if (!state.user) return go('#/login');
+      state.agency = await api.myAgency(state.user);
+      if (!state.agency) return page === 'setup' ? renderSetup() : go('#/setup');
+      return page === 'setup' ? go('#/dashboard') : renderDashboard();
+    }
+    applyBrand(null);
+    renderLanding();
+  } catch (e) {
+    console.error(e);
+    app.innerHTML = `<div class="narrow page" style="padding-top:60px"><div class="card"><h2>Something went wrong</h2><p class="hint">${esc(e.message)}</p><a class="btn" href="#/">Back to start</a></div></div>`;
+  }
+}
 
-alter table public.applications alter column agency_id set not null;
-create index if not exists applications_agency_id_idx on public.applications(agency_id);
-create index if not exists applications_status_idx    on public.applications(agency_id, status);
+function platformBar(right = '') {
+  return `<div class="wrap topbar">
+    <a class="logo-mark" href="#/"><span class="dot">${esc(initials(CONFIG.PLATFORM_NAME))}</span>
+      <span>${esc(CONFIG.PLATFORM_NAME)}<small>${esc(CONFIG.PLATFORM_TAGLINE)}</small></span></a>
+    <div>${right}</div></div>`;
+}
 
--- Keeps the current live form working: submissions with no agency_id go to Sky Touch
-create or replace function public.applications_default_agency()
-returns trigger language plpgsql security definer set search_path = public as $$
-begin
-  if new.agency_id is null then
-    select id into new.agency_id from public.agencies where slug = 'sky-touch';
-  end if;
-  return new;
-end $$;
+/* ================================================================
+   LANDING
+   ================================================================ */
+function renderLanding() {
+  app.innerHTML = `
+  ${platformBar('<a class="btn secondary small" href="#/login">Agent login</a>')}
+  <div class="wrap page">
+    <section class="hero">
+      <span class="eyebrow">For UK education agents &amp; agencies</span>
+      <h1>Your own branded student application portal, ready in minutes.</h1>
+      <p class="lede">Add your logo and colours, share your link, and review every application and document securely in one place.</p>
+      <div class="cta">
+        <a class="btn" href="#/login">Start as an agent or agency</a>
+        <a class="btn secondary" href="#/apply/bright-path">${DEMO ? 'See a sample form' : 'Agent login'}</a>
+      </div>
+    </section>
+    <section class="steps-grid">
+      <div class="card"><div class="num">1</div><h3>Sign up</h3><p>Join as an independent agent or a whole agency, using a one-time email code. No passwords to forget.</p></div>
+      <div class="card"><div class="num">2</div><h3>Make it yours</h3><p>Upload your logo, choose your colours and add your contact details.</p></div>
+      <div class="card"><div class="num">3</div><h3>Share your link</h3><p>Students apply through your branded page and upload their documents.</p></div>
+      <div class="card"><div class="num">4</div><h3>Manage applications</h3><p>Review submissions, track progress and keep notes. Your data stays yours alone.</p></div>
+    </section>
+  </div>`;
+}
 
-drop trigger if exists applications_default_agency on public.applications;
-create trigger applications_default_agency
-  before insert on public.applications
-  for each row execute function public.applications_default_agency();
+/* ================================================================
+   LOGIN (email one-time code)
+   ================================================================ */
+function renderLogin() {
+  applyBrand(null);
+  app.innerHTML = `
+  ${platformBar()}
+  <div class="narrow page" style="padding-top:24px;padding-bottom:48px">
+    <div class="card">
+      <h2 style="margin-top:0">Agent login</h2>
+      <p class="hint">We'll email you a one-time code. New here? The same steps create your account.</p>
+      <form id="emailForm">
+        <label for="email">Email address</label>
+        <input id="email" type="email" autocomplete="email" required placeholder="you@agency.co.uk">
+        <div class="error" id="err1"></div>
+        <button class="btn" style="width:100%;margin-top:6px">Send my code</button>
+      </form>
+      <form id="codeForm" hidden>
+        <label for="code">Enter the code from your email</label>
+        <input id="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,10}" maxlength="10" required placeholder="123456">
+        ${DEMO ? '<p class="hint">Demo mode: any 6 digits will work.</p>' : ''}
+        <div class="error" id="err2"></div>
+        <button class="btn" style="width:100%;margin-top:6px">Log in</button>
+        <button type="button" class="btn ghost small" id="backBtn" style="width:100%;margin-top:6px">Use a different email</button>
+      </form>
+    </div>
+  </div>`;
+  const emailForm = $('#emailForm'), codeForm = $('#codeForm');
+  let email = '';
+  emailForm.onsubmit = async e => {
+    e.preventDefault();
+    const btn = emailForm.querySelector('button'); btn.disabled = true; $('#err1').textContent = '';
+    email = $('#email').value.trim().toLowerCase();
+    try { await api.sendCode(email); emailForm.hidden = true; codeForm.hidden = false; $('#code').focus(); }
+    catch (err) { $('#err1').textContent = err.message; }
+    btn.disabled = false;
+  };
+  codeForm.onsubmit = async e => {
+    e.preventDefault();
+    const btn = codeForm.querySelector('button'); btn.disabled = true; $('#err2').textContent = '';
+    try { await api.verifyCode(email, $('#code').value.trim()); go('#/dashboard'); }
+    catch (err) { $('#err2').textContent = 'That code didn’t work. Check it and try again.'; btn.disabled = false; }
+  };
+  $('#backBtn').onclick = () => { codeForm.hidden = true; emailForm.hidden = false; };
+}
 
-drop trigger if exists applications_set_updated_at on public.applications;
-create trigger applications_set_updated_at
-  before update on public.applications
-  for each row execute function public.set_updated_at();
+/* ================================================================
+   AGENCY SETUP (first login)
+   ================================================================ */
+function renderSetup() {
+  app.innerHTML = `
+  ${platformBar('<button class="btn ghost small" id="out">Log out</button>')}
+  <div class="narrow page" style="padding-top:24px;padding-bottom:48px">
+    <div class="card">
+      <h2 style="margin-top:0">Set up your agency</h2>
+      <p class="hint">You can change your branding later. Your link name is permanent.</p>
+      <form id="setupForm">
+        <label for="aname">Agency or business name <span class="hint">— or your own name if you work independently</span></label>
+        <input id="aname" required maxlength="120" placeholder="Bright Path Education">
+        <label for="aslug">Your link <span class="hint">— lowercase letters, numbers and dashes</span></label>
+        <input id="aslug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" minlength="3" maxlength="50" placeholder="bright-path">
+        <p class="hint" id="slugPreview"></p>
+        <div class="error" id="err"></div>
+        <button class="btn" style="width:100%">Create my portal</button>
+      </form>
+    </div>
+  </div>`;
+  let touched = false;
+  const name = $('#aname'), slug = $('#aslug');
+  const preview = () => $('#slugPreview').textContent = slug.value ? `Students will apply at: …/#/apply/${slug.value}` : '';
+  name.oninput = () => { if (!touched) { slug.value = slugify(name.value); preview(); } };
+  slug.oninput = () => { touched = true; slug.value = slugify(slug.value); preview(); };
+  $('#out').onclick = async () => { await api.signOut(); go('#/'); };
+  $('#setupForm').onsubmit = async e => {
+    e.preventDefault();
+    const btn = e.target.querySelector('button'); btn.disabled = true; $('#err').textContent = '';
+    try { await api.createAgency(name.value.trim(), slug.value); go('#/dashboard'); }
+    catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
+  };
+}
 
--- ---------------------------------------------------------------------
--- 5. APPLICATION NOTES — agents track progress on each student
---    (built dynamically so it matches whatever type applications.id is)
--- ---------------------------------------------------------------------
-do $$
-declare id_type text;
-begin
-  select format_type(atttypid, atttypmod) into id_type
-  from pg_attribute
-  where attrelid = 'public.applications'::regclass and attname = 'id';
+/* ================================================================
+   STUDENT APPLICATION FORM (branded per agency)
+   ================================================================ */
+const FORM_STEPS = [
+  { title: 'About you', sub: 'Your basic details so we can contact you.', fields: [
+    { k: 'first_name', l: 'First name', req: true, ac: 'given-name' },
+    { k: 'last_name', l: 'Last name', req: true, ac: 'family-name' },
+    { k: 'email', l: 'Email', type: 'email', req: true, ac: 'email' },
+    { k: 'phone', l: 'Phone', type: 'tel', req: true, ac: 'tel' },
+    { k: 'date_of_birth', l: 'Date of birth', type: 'date', req: true },
+    { k: 'nationality', l: 'Nationality', req: true }
+  ]},
+  { title: 'Your address', sub: 'Where you live now, plus a recent proof of address.', fields: [
+    { k: 'address_line1', l: 'Address', req: true, ac: 'street-address', wide: true },
+    { k: 'city', l: 'Town or city', req: true, ac: 'address-level2' },
+    { k: 'postcode', l: 'Postcode', req: true, ac: 'postal-code' },
+    { k: 'proof_of_address', l: 'Proof of address', file: true, req: true, hint: 'Utility bill, bank statement or council letter from the last 3 months' }
+  ]},
+  { title: 'Your identity', sub: 'A photo ID and a selfie so we can confirm it’s you.', fields: [
+    { k: 'id_document', l: 'Photo ID', file: true, req: true, hint: 'Passport, BRP or driving licence' },
+    { k: 'selfie', l: 'Selfie', file: true, req: true, selfie: true, hint: 'A clear photo of your face' }
+  ]},
+  { title: 'UK & work', sub: 'Your time in the UK and current work.', fields: [
+    { k: 'uk_entry_date', l: 'Date you entered the UK', type: 'date', req: true },
+    { k: 'employment_status', l: 'Employment status', req: true, options: ['Full-time', 'Part-time', 'Self-employed', 'Not working', 'Student'] },
+    { k: 'employer', l: 'Employer', hint: 'If working' },
+    { k: 'job_title', l: 'Job title', hint: 'If working' }
+  ]},
+  { title: 'Education', sub: 'Your background and what you’d like to study.', fields: [
+    { k: 'education_level', l: 'Highest qualification', req: true, options: ['GCSEs or equivalent', 'A-levels or equivalent', 'Diploma', 'Degree', 'Postgraduate', 'Other'] },
+    { k: 'institution', l: 'Where you studied' },
+    { k: 'course_interest', l: 'Course you’re interested in', req: true, wide: true }
+  ]},
+  { title: 'Review & submit', sub: 'Check everything looks right.', review: true }
+];
+const FILE_LABELS = { proof_of_address: 'Proof of address', id_document: 'Photo ID', selfie: 'Selfie' };
 
-  execute format($f$
-    create table if not exists public.application_notes (
-      id             uuid primary key default gen_random_uuid(),
-      application_id %s not null references public.applications(id) on delete cascade,
-      agency_id      uuid not null references public.agencies(id) on delete cascade,
-      author_id      uuid default auth.uid() references auth.users(id) on delete set null,
-      body           text not null check (length(body) between 1 and 5000),
-      created_at     timestamptz not null default now()
-    )$f$, id_type);
-end $$;
+async function renderApply(slug) {
+  app.innerHTML = `<div class="empty">Loading…</div>`;
+  const agency = await api.getAgencyBySlug(slug);
+  if (!agency) {
+    applyBrand(null);
+    app.innerHTML = `<div class="narrow page" style="padding-top:60px"><div class="card"><h2 style="margin-top:0">Portal not found</h2><p class="hint">Check the link you were given, or contact your agent.</p></div></div>`;
+    return;
+  }
+  applyBrand(agency);
+  document.title = agency.name + ' — Apply';
+  const values = {}, files = {};
+  let step = 0;
+  const logo = api.logoUrl(agency.logo_path);
 
-create index if not exists application_notes_app_idx on public.application_notes(application_id);
+  app.innerHTML = `
+  <header class="brand-header"><div class="narrow agency">
+    ${logo ? `<img class="agency-logo" src="${esc(logo)}" alt="">` : `<div class="initials">${esc(initials(agency.name))}</div>`}
+    <div><h1>${esc(agency.name)}</h1><p>Student application</p></div>
+  </div></header>
+  <div class="narrow form-shell"><div class="card" id="formCard"></div>
+    <p class="powered">${agency.contact_email ? `Questions? <a href="mailto:${esc(agency.contact_email)}">${esc(agency.contact_email)}</a>${agency.contact_phone ? ' · ' + esc(agency.contact_phone) : ''}<br>` : ''}Powered by ${esc(CONFIG.PLATFORM_NAME)}</p>
+  </div>`;
+  const card = $('#formCard');
 
--- A note always inherits its application's agency (can't be spoofed)
-create or replace function public.notes_set_agency()
-returns trigger language plpgsql security definer set search_path = public as $$
-begin
-  select agency_id into new.agency_id from public.applications where id = new.application_id;
-  new.author_id := auth.uid();
-  return new;
-end $$;
+  function fieldHtml(f) {
+    const id = 'f_' + f.k, req = f.req ? 'required' : '';
+    const label = `<label for="${id}">${esc(f.l)}${f.req ? '' : ' <span class="hint">(optional)</span>'}${f.hint ? `<br><span class="hint">${esc(f.hint)}</span>` : ''}</label>`;
+    if (f.file) return `<div style="grid-column:1/-1">${label}<div class="file-drop">
+        <input id="${id}" type="file" accept="image/*,application/pdf" ${f.selfie ? 'capture="user"' : ''}>
+        <div class="chosen" id="${id}_c">${files[f.k] ? '✓ ' + esc(files[f.k].name) : ''}</div></div></div>`;
+    if (f.options) return `<div ${f.wide ? 'style="grid-column:1/-1"' : ''}>${label}<select id="${id}" ${req}>
+        <option value="">Choose…</option>${f.options.map(o => `<option ${values[f.k] === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></div>`;
+    return `<div ${f.wide ? 'style="grid-column:1/-1"' : ''}>${label}<input id="${id}" type="${f.type || 'text'}" ${req} ${f.ac ? `autocomplete="${f.ac}"` : ''} value="${esc(values[f.k] || '')}"></div>`;
+  }
 
-drop trigger if exists notes_set_agency on public.application_notes;
-create trigger notes_set_agency
-  before insert on public.application_notes
-  for each row execute function public.notes_set_agency();
+  function reviewHtml() {
+    const rows = FORM_STEPS.flatMap(s => s.fields || []).filter(f => !f.file)
+      .map(f => `<dt>${esc(f.l)}</dt><dd>${esc(f.type === 'date' ? fmtDate(values[f.k]) : (values[f.k] || '—'))}</dd>`).join('');
+    const docs = Object.keys(FILE_LABELS).map(k => `<dt>${FILE_LABELS[k]}</dt><dd>${files[k] ? '✓ ' + esc(files[k].name) : '—'}</dd>`).join('');
+    return `<div class="review"><dl>${rows}${docs}</dl>
+      <label class="consent"><input type="checkbox" id="consent">
+      <span>I confirm the information is accurate, and I consent to ${esc(agency.name)} storing and processing my details and documents to assess my application. I can ask for my data to be deleted at any time.</span></label></div>`;
+  }
 
--- ---------------------------------------------------------------------
--- 6. ROW LEVEL SECURITY — the isolation between agencies
--- ---------------------------------------------------------------------
+  function draw() {
+    const s = FORM_STEPS[step];
+    card.innerHTML = `
+      <div class="progress" aria-hidden="true">${FORM_STEPS.map((_, i) => `<span class="${i <= step ? 'done' : ''}"></span>`).join('')}</div>
+      <p class="hint" style="margin:0">Step ${step + 1} of ${FORM_STEPS.length}</p>
+      <h2 class="step-title">${esc(s.title)}</h2><p class="step-sub">${esc(s.sub)}</p>
+      <form id="stepForm" novalidate>
+        ${s.review ? reviewHtml() : `<div class="row">${s.fields.map(fieldHtml).join('')}</div>`}
+        <div class="error" id="stepErr"></div>
+        <div class="nav-row">
+          ${step > 0 ? '<button type="button" class="btn secondary" id="prev">Back</button>' : '<span></span>'}
+          <button class="btn" id="next">${s.review ? 'Submit application' : 'Continue'}</button>
+        </div>
+      </form>`;
+    card.classList.remove('page'); void card.offsetWidth; card.classList.add('page');
 
--- AGENCIES
-alter table public.agencies enable row level security;
-revoke all on public.agencies from anon;
--- Owners may edit branding/contact only — never plan or is_active
-revoke update on public.agencies from authenticated;
-grant update (name, logo_path, primary_colour, accent_colour, contact_email, contact_phone, website)
-  on public.agencies to authenticated;
+    (s.fields || []).filter(f => f.file).forEach(f => {
+      $('#f_' + f.k).onchange = ev => {
+        const file = ev.target.files[0];
+        if (!file) return;
+        if (file.size > CONFIG.MAX_FILE_MB * 1024 * 1024) { $('#stepErr').textContent = `${f.l} is over ${CONFIG.MAX_FILE_MB} MB — please choose a smaller file.`; ev.target.value = ''; return; }
+        if (!/^image\/|^application\/pdf$/.test(file.type)) { $('#stepErr').textContent = `${f.l} must be a photo or PDF.`; ev.target.value = ''; return; }
+        files[f.k] = file; $('#f_' + f.k + '_c').textContent = '✓ ' + file.name; $('#stepErr').textContent = '';
+      };
+    });
+    if ($('#prev')) $('#prev').onclick = () => { save(); step--; draw(); card.scrollIntoView({ block: 'start' }); };
+    $('#stepForm').onsubmit = async e => {
+      e.preventDefault();
+      save();
+      const err = validate();
+      if (err) { $('#stepErr').textContent = err; return; }
+      if (!s.review) { step++; draw(); card.scrollIntoView({ block: 'start' }); return; }
+      const btn = $('#next'); btn.disabled = true; btn.textContent = 'Submitting…';
+      try {
+        const fields = {};
+        FORM_STEPS.flatMap(x => x.fields || []).filter(f => !f.file).forEach(f => fields[f.k] = values[f.k] || null);
+        const ref = await api.submitApplication(agency, fields, files);
+        thankYou(ref);
+      } catch (ex) {
+        console.error(ex);
+        $('#stepErr').textContent = 'Sorry, we couldn’t submit your application. Please try again. (' + ex.message + ')';
+        btn.disabled = false; btn.textContent = 'Submit application';
+      }
+    };
+  }
+  function save() {
+    (FORM_STEPS[step].fields || []).filter(f => !f.file).forEach(f => { const el = $('#f_' + f.k); if (el) values[f.k] = el.value.trim(); });
+  }
+  function validate() {
+    const s = FORM_STEPS[step];
+    if (s.review) return $('#consent').checked ? '' : 'Please tick the consent box to submit.';
+    for (const f of s.fields) {
+      if (f.file) { if (f.req && !files[f.k]) return `Please add your ${f.l.toLowerCase()}.`; continue; }
+      const v = values[f.k];
+      if (f.req && !v) return `Please fill in ${f.l.toLowerCase()}.`;
+      if (f.type === 'email' && v && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return 'Please enter a valid email address.';
+    }
+    return '';
+  }
+  function thankYou(ref) {
+    card.innerHTML = `<div class="page" style="text-align:center">
+      <h2 style="margin-top:0">Application received</h2>
+      <p class="hint">Thank you. ${esc(agency.name)} will be in touch soon. Please keep your reference number.</p>
+      <div class="ref-box">${esc(ref)}</div>
+      <button class="btn secondary" id="copyRef">Copy reference</button></div>`;
+    $('#copyRef').onclick = () => navigator.clipboard?.writeText(ref).then(() => toast('Reference copied'));
+  }
+  draw();
+}
 
-drop policy if exists "v1 members read own agency"   on public.agencies;
-drop policy if exists "v1 owners update own agency"  on public.agencies;
-create policy "v1 members read own agency" on public.agencies
-  for select to authenticated using (public.is_agency_member(id));
-create policy "v1 owners update own agency" on public.agencies
-  for update to authenticated
-  using (public.is_agency_owner(id)) with check (public.is_agency_owner(id));
+/* ================================================================
+   AGENT DASHBOARD
+   ================================================================ */
+async function renderDashboard() {
+  const agency = state.agency;
+  applyBrand(agency);
+  document.title = agency.name + ' — Dashboard';
+  let tab = 'applications', filter = 'all', search = '', apps = [];
+  const logo = api.logoUrl(agency.logo_path);
 
--- AGENCY MEMBERS
-alter table public.agency_members enable row level security;
-revoke all on public.agency_members from anon;
+  app.innerHTML = `
+  <div class="wrap page">
+    <div class="dash-head">
+      <div class="agency">
+        ${logo ? `<img src="${esc(logo)}" alt="" style="background:#fff">` : `<div class="initials">${esc(initials(agency.name))}</div>`}
+        <div><h1>${esc(agency.name)}</h1><span class="hint">${esc(state.user.email)}</span></div>
+      </div>
+      <button class="btn ghost small" id="out">Log out</button>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button data-tab="applications" class="active">Applications</button>
+      <button data-tab="branding">Branding</button>
+      <button data-tab="share">Share link</button>
+    </nav>
+    <section id="tabBody" style="padding-bottom:48px"></section>
+  </div>`;
+  $('#out').onclick = async () => { await api.signOut(); go('#/'); };
+  app.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+    tab = b.dataset.tab;
+    app.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('active', x === b));
+    drawTab();
+  });
 
-drop policy if exists "v1 members see their team" on public.agency_members;
-drop policy if exists "v1 owners add members"     on public.agency_members;
-drop policy if exists "v1 owners remove members"  on public.agency_members;
-create policy "v1 members see their team" on public.agency_members
-  for select to authenticated
-  using (user_id = auth.uid() or public.is_agency_member(agency_id));
-create policy "v1 owners add members" on public.agency_members
-  for insert to authenticated with check (public.is_agency_owner(agency_id));
-create policy "v1 owners remove members" on public.agency_members
-  for delete to authenticated using (public.is_agency_owner(agency_id));
+  async function drawTab() {
+    const body = $('#tabBody');
+    body.classList.remove('page'); void body.offsetWidth; body.classList.add('page');
+    if (tab === 'applications') {
+      body.innerHTML = '<div class="empty">Loading applications…</div>';
+      try { apps = await api.listApplications(agency.id); } catch (e) { body.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+      drawApps();
+    }
+    if (tab === 'branding') drawBranding(body);
+    if (tab === 'share') drawShare(body);
+  }
 
--- APPLICATIONS
-alter table public.applications enable row level security;
+  function drawApps() {
+    const count = s => apps.filter(a => a.status === s).length;
+    const q = search.toLowerCase();
+    const list = apps.filter(a => (filter === 'all' || a.status === filter) &&
+      (!q || `${a.first_name} ${a.last_name} ${a.email} ${a.reference} ${a.course_interest}`.toLowerCase().includes(q)));
+    $('#tabBody').innerHTML = `
+      <div class="stats">
+        <div class="stat"><b>${apps.length}</b><span>Total</span></div>
+        <div class="stat"><b>${count('new')}</b><span>New</span></div>
+        <div class="stat"><b>${count('reviewing') + count('more_info_needed')}</b><span>In progress</span></div>
+        <div class="stat"><b>${count('accepted')}</b><span>Accepted</span></div>
+      </div>
+      <input id="search" type="search" placeholder="Search name, email, reference or course" value="${esc(search)}" style="margin-bottom:10px">
+      <div class="filters">
+        <button class="chip ${filter === 'all' ? 'active' : ''}" data-f="all">All</button>
+        ${STATUSES.map(([k, l]) => `<button class="chip ${filter === k ? 'active' : ''}" data-f="${k}">${l}</button>`).join('')}
+      </div>
+      <div class="app-list">${list.length ? list.map(a => `
+        <button class="app-item" data-id="${esc(a.id)}">
+          <span class="name">${esc(a.first_name)} ${esc(a.last_name)}</span>
+          <span class="badge ${esc(a.status)}">${esc(statusLabel(a.status))}</span>
+          <span class="meta">${esc(a.course_interest || 'No course given')} · ${esc(a.reference || '')}</span>
+          <span class="meta">${fmtDate(a.created_at)}</span>
+        </button>`).join('') : `<div class="empty">${apps.length ? 'No applications match.' : 'No applications yet. Share your link to get started.'}</div>`}
+      </div>`;
+    const s = $('#search');
+    s.oninput = () => { search = s.value; const pos = s.selectionStart; drawApps(); const n = $('#search'); n.focus(); n.setSelectionRange(pos, pos); };
+    $('#tabBody').querySelectorAll('.chip').forEach(c => c.onclick = () => { filter = c.dataset.f; drawApps(); });
+    $('#tabBody').querySelectorAll('.app-item').forEach(b => b.onclick = () => openApp(apps.find(a => String(a.id) === b.dataset.id)));
+  }
 
-drop policy if exists "v1 public can submit"         on public.applications;
-drop policy if exists "v1 members read applications" on public.applications;
-drop policy if exists "v1 members update applications" on public.applications;
-drop policy if exists "v1 owners delete applications"   on public.applications;
+  async function openApp(a) {
+    const overlay = document.createElement('div'); overlay.className = 'overlay';
+    const drawer = document.createElement('aside'); drawer.className = 'drawer';
+    drawer.setAttribute('role', 'dialog'); drawer.setAttribute('aria-label', 'Application details');
+    const detail = (l, v) => `<dt>${esc(l)}</dt><dd>${esc(v || '—')}</dd>`;
+    drawer.innerHTML = `
+      <div class="drawer-head"><div><b>${esc(a.first_name)} ${esc(a.last_name)}</b><br><span class="hint">${esc(a.reference || '')}</span></div>
+        <button class="btn secondary small" id="closeD">Close</button></div>
+      <div class="drawer-body stack">
+        <div class="card"><label for="statusSel" style="margin-top:0">Status</label>
+          <select id="statusSel">${STATUSES.map(([k, l]) => `<option value="${k}" ${a.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+        <div class="card review"><h3 style="margin-top:0">Details</h3><dl>
+          ${detail('Email', a.email)}${detail('Phone', a.phone)}${detail('Date of birth', fmtDate(a.date_of_birth))}
+          ${detail('Nationality', a.nationality)}${detail('Address', [a.address_line1, a.city, a.postcode].filter(Boolean).join(', '))}
+          ${detail('UK entry', fmtDate(a.uk_entry_date))}${detail('Employment', a.employment_status)}
+          ${detail('Employer', a.employer)}${detail('Job title', a.job_title)}${detail('Qualification', a.education_level)}
+          ${detail('Studied at', a.institution)}${detail('Course', a.course_interest)}${detail('Submitted', fmtDateTime(a.created_at))}
+        </dl></div>
+        <div class="card"><h3 style="margin-top:0">Documents</h3><div class="doc-links" id="docs"><span class="hint">Loading…</span></div>
+          <p class="hint" style="margin-bottom:0">Links expire after 10 minutes.</p></div>
+        <div class="card"><h3 style="margin-top:0">Notes</h3><div class="stack" id="notes"></div>
+          <form id="noteForm" style="margin-top:12px"><textarea id="noteBody" rows="3" maxlength="5000" placeholder="Add a note for your team" required></textarea>
+          <button class="btn small" style="margin-top:8px">Add note</button></form></div>
+      </div>`;
+    document.body.append(overlay, drawer);
+    document.body.style.overflow = 'hidden';
+    requestAnimationFrame(() => { overlay.classList.add('show'); drawer.classList.add('show'); });
+    const close = () => {
+      overlay.classList.remove('show'); drawer.classList.remove('show');
+      document.body.style.overflow = '';
+      setTimeout(() => { overlay.remove(); drawer.remove(); }, 320);
+      document.removeEventListener('keydown', onKey);
+    };
+    const onKey = e => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
+    overlay.onclick = close; $('#closeD', drawer).onclick = close;
 
--- Students (not logged in) can submit, but can never read anything back
-create policy "v1 public can submit" on public.applications
-  for insert to anon, authenticated
-  with check (status = 'new' and public.agency_is_active(agency_id));
-create policy "v1 members read applications" on public.applications
-  for select to authenticated using (public.is_agency_member(agency_id));
-create policy "v1 members update applications" on public.applications
-  for update to authenticated
-  using (public.is_agency_member(agency_id)) with check (public.is_agency_member(agency_id));
-create policy "v1 owners delete applications" on public.applications
-  for delete to authenticated using (public.is_agency_owner(agency_id));
+    $('#statusSel', drawer).onchange = async e => {
+      try { await api.updateStatus(a.id, e.target.value); a.status = e.target.value; toast('Status updated'); drawApps(); }
+      catch (err) { toast('Couldn’t update status'); e.target.value = a.status; }
+    };
+    const links = await api.documentLinks(a).catch(() => []);
+    $('#docs', drawer).innerHTML = links.length
+      ? links.map(l => `<a class="btn secondary small" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(FILE_LABELS[l.key] || l.key)}</a>`).join('')
+      : '<span class="hint">No documents uploaded.</span>';
 
--- APPLICATION NOTES
-alter table public.application_notes enable row level security;
-revoke all on public.application_notes from anon;
+    async function drawNotes() {
+      const notes = await api.listNotes(a.id).catch(() => []);
+      $('#notes', drawer).innerHTML = notes.length
+        ? notes.map(n => `<div class="note"><time>${fmtDateTime(n.created_at)}</time>${esc(n.body)}</div>`).join('')
+        : '<span class="hint">No notes yet.</span>';
+    }
+    drawNotes();
+    $('#noteForm', drawer).onsubmit = async e => {
+      e.preventDefault();
+      const t = $('#noteBody', drawer); if (!t.value.trim()) return;
+      try { await api.addNote(a.id, t.value.trim()); t.value = ''; drawNotes(); }
+      catch (err) { toast('Couldn’t save note'); }
+    };
+  }
 
-drop policy if exists "v1 members read notes"   on public.application_notes;
-drop policy if exists "v1 members add notes"    on public.application_notes;
-drop policy if exists "v1 authors delete notes" on public.application_notes;
-create policy "v1 members read notes" on public.application_notes
-  for select to authenticated using (public.is_agency_member(agency_id));
-create policy "v1 members add notes" on public.application_notes
-  for insert to authenticated with check (public.is_agency_member(agency_id));
-create policy "v1 authors delete notes" on public.application_notes
-  for delete to authenticated using (author_id = auth.uid());
+  function drawBranding(body) {
+    const isOwner = agency.role === 'owner';
+    body.innerHTML = `
+      <div class="card" style="max-width:640px">
+        ${isOwner ? '' : '<p class="hint">Only the agency owner can change branding.</p>'}
+        <form id="brandForm">
+          <fieldset ${isOwner ? '' : 'disabled'} style="border:0;padding:0;margin:0">
+          <label for="bName" style="margin-top:0">Agency name</label><input id="bName" value="${esc(agency.name)}" required maxlength="120">
+          <label for="bLogo">Logo <span class="hint">— PNG, JPG or WebP, up to 2 MB</span></label>
+          <div class="file-drop"><input id="bLogo" type="file" accept="image/png,image/jpeg,image/webp"></div>
+          <div class="row">
+            <div><label for="bPrimary">Main colour</label><input id="bPrimary" type="color" value="${esc(agency.primary_colour)}"></div>
+            <div><label for="bAccent">Accent colour</label><input id="bAccent" type="color" value="${esc(agency.accent_colour)}"></div>
+          </div>
+          <label>Preview</label>
+          <div class="preview-chip" id="bPreview"><b>${esc(agency.name)}</b><span class="pill">Apply now</span></div>
+          <div class="row">
+            <div><label for="bEmail">Contact email</label><input id="bEmail" type="email" value="${esc(agency.contact_email || '')}"></div>
+            <div><label for="bPhone">Contact phone</label><input id="bPhone" type="tel" value="${esc(agency.contact_phone || '')}"></div>
+          </div>
+          <label for="bWeb">Website</label><input id="bWeb" type="url" placeholder="https://" value="${esc(agency.website || '')}">
+          <div class="error" id="bErr"></div>
+          <button class="btn" style="margin-top:8px">Save branding</button>
+          </fieldset>
+        </form>
+      </div>`;
+    const pv = () => { applyBrand({ primary_colour: $('#bPrimary').value, accent_colour: $('#bAccent').value }); };
+    $('#bPrimary').oninput = pv; $('#bAccent').oninput = pv;
+    $('#brandForm').onsubmit = async e => {
+      e.preventDefault();
+      const btn = e.target.querySelector('button'); btn.disabled = true; $('#bErr').textContent = '';
+      try {
+        const fields = {
+          name: $('#bName').value.trim(), primary_colour: $('#bPrimary').value, accent_colour: $('#bAccent').value,
+          contact_email: $('#bEmail').value.trim() || null, contact_phone: $('#bPhone').value.trim() || null,
+          website: $('#bWeb').value.trim() || null
+        };
+        const logoFile = $('#bLogo').files[0];
+        if (logoFile) {
+          if (logoFile.size > 2 * 1024 * 1024) throw new Error('Logo must be 2 MB or smaller.');
+          fields.logo_path = await api.uploadLogo(agency.id, logoFile);
+        }
+        await api.updateAgency(agency.id, fields);
+        Object.assign(agency, fields);
+        toast('Branding saved');
+        renderDashboard();
+      } catch (err) { $('#bErr').textContent = err.message; btn.disabled = false; }
+    };
+  }
 
--- ---------------------------------------------------------------------
--- 7. Functions the front end calls
--- ---------------------------------------------------------------------
+  function drawShare(body) {
+    const link = location.origin + location.pathname + '#/apply/' + agency.slug;
+    body.innerHTML = `
+      <div class="card" style="max-width:640px">
+        <h3 style="margin-top:0">Your student application link</h3>
+        <p class="hint">Share this on your website, WhatsApp, email or social media. Everything submitted comes straight to your dashboard.</p>
+        <div class="share-link"><input id="shareUrl" readonly value="${esc(link)}"><button class="btn" id="copyLink">Copy</button></div>
+        <a class="btn secondary" href="#/apply/${esc(agency.slug)}" style="margin-top:12px">Preview your form</a>
+      </div>`;
+    $('#copyLink').onclick = () => navigator.clipboard?.writeText(link).then(() => toast('Link copied'));
+  }
 
--- Public form: load an agency's branding from its link, e.g. iata4u.com/a/sky-touch
--- JS: supabase.rpc('get_agency_by_slug', { p_slug: 'sky-touch' })
-create or replace function public.get_agency_by_slug(p_slug text)
-returns table (id uuid, name text, slug text, logo_path text,
-               primary_colour text, accent_colour text,
-               contact_email text, contact_phone text, website text)
-language sql stable security definer set search_path = public as $$
-  select id, name, slug, logo_path, primary_colour, accent_colour,
-         contact_email, contact_phone, website
-  from public.agencies
-  where slug = lower(p_slug) and is_active;
-$$;
-grant execute on function public.get_agency_by_slug(text) to anon, authenticated;
+  drawTab();
+}
 
--- Agent sign-up: creates the agency and makes the caller its owner
--- JS: supabase.rpc('create_agency', { p_name: 'Bright Path', p_slug: 'bright-path' })
-create or replace function public.create_agency(p_name text, p_slug text)
-returns uuid language plpgsql security definer set search_path = public as $$
-declare v_id uuid;
-begin
-  if auth.uid() is null then
-    raise exception 'You must be signed in to create an agency';
-  end if;
-  insert into public.agencies (name, slug)
-  values (trim(p_name), lower(trim(p_slug)))
-  returning id into v_id;
-  insert into public.agency_members (agency_id, user_id, role)
-  values (v_id, auth.uid(), 'owner');
-  return v_id;
-end $$;
-revoke execute on function public.create_agency(text, text) from public, anon;
-grant  execute on function public.create_agency(text, text) to authenticated;
-
--- ---------------------------------------------------------------------
--- 8. STORAGE
---    documents bucket: files go under  <agency_id>/<application ref>/<file>
---    agency-logos bucket (public):    <agency_id>/logo.png
--- ---------------------------------------------------------------------
-insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-values ('agency-logos', 'agency-logos', true, 2097152,
-        array['image/png', 'image/jpeg', 'image/webp'])
-on conflict (id) do nothing;
-
-drop policy if exists "v1 public upload to agency folder" on storage.objects;
-drop policy if exists "v1 members read agency documents"  on storage.objects;
-drop policy if exists "v1 owners delete agency documents" on storage.objects;
-drop policy if exists "v1 owners manage logo insert"      on storage.objects;
-drop policy if exists "v1 owners manage logo update"      on storage.objects;
-drop policy if exists "v1 owners manage logo delete"      on storage.objects;
-
--- Students upload only into an active agency's folder; they can't read back
-create policy "v1 public upload to agency folder" on storage.objects
-  for insert to anon, authenticated
-  with check (bucket_id = 'documents'
-              and public.agency_folder_is_active((storage.foldername(name))[1]));
-
-create policy "v1 members read agency documents" on storage.objects
-  for select to authenticated
-  using (bucket_id = 'documents'
-         and public.is_agency_member_folder((storage.foldername(name))[1]));
-
-create policy "v1 owners delete agency documents" on storage.objects
-  for delete to authenticated
-  using (bucket_id = 'documents'
-         and public.is_agency_owner_folder((storage.foldername(name))[1]));
-
-create policy "v1 owners manage logo insert" on storage.objects
-  for insert to authenticated
-  with check (bucket_id = 'agency-logos'
-              and public.is_agency_owner_folder((storage.foldername(name))[1]));
-create policy "v1 owners manage logo update" on storage.objects
-  for update to authenticated
-  using (bucket_id = 'agency-logos'
-         and public.is_agency_owner_folder((storage.foldername(name))[1]));
-create policy "v1 owners manage logo delete" on storage.objects
-  for delete to authenticated
-  using (bucket_id = 'agency-logos'
-         and public.is_agency_owner_folder((storage.foldername(name))[1]));
-
-commit;
-
--- =====================================================================
--- AFTER RUNNING: check for OLD policies that could leak data.
--- Policies combine with OR, so an older "anon can read" policy would
--- override the isolation above. Run this and review anything NOT
--- starting with "v1":
---
---   select schemaname, tablename, policyname, roles, cmd
---   from pg_policies
---   where tablename in ('applications', 'agencies', 'agency_members',
---                       'application_notes', 'objects')
---   order by tablename, policyname;
---
--- Then make yourself owner of Sky Touch (swap in your email):
---
---   insert into public.agency_members (agency_id, user_id, role)
---   select a.id, u.id, 'owner'
---   from public.agencies a, auth.users u
---   where a.slug = 'sky-touch' and u.email = 'you@example.com';
--- =====================================================================
+/* ---------------- Start ---------------- */
+if (DEMO) $('#banner').innerHTML = `<div class="demo-banner"><b>Demo mode</b> — sample data only. Add your Supabase URL and anon key in the CONFIG section to go live.</div>`;
+if (!DEMO) sb.auth.onAuthStateChange((evt) => { if (evt === 'SIGNED_OUT') { state.user = null; state.agency = null; } });
+route();
+</script>
+</body>
+</html>
