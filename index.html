@@ -1,4 +1,4 @@
-<!doctype html>
+ <!doctype html>
 <html lang="en-GB">
 <head>
 <meta charset="utf-8">
@@ -195,8 +195,8 @@ input[type="checkbox"] { width: 20px; height: 20px; min-height: 0; accent-color:
    Leave blank to run in DEMO MODE with sample data.
    ================================================================ */
 const CONFIG = {
-  SUPABASE_URL: '',
-  SUPABASE_ANON_KEY: '',
+  SUPABASE_URL: 'https://fippstyxdffsfdqyswhi.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_9ndIKh8eE4bgN8De5Mk4mA_sZSvhELL',
   PLATFORM_NAME: 'IATA Database',
   PLATFORM_TAGLINE: 'Intelligent Academic Teaching Assistant',
   MAX_FILE_MB: 10
@@ -429,16 +429,16 @@ function renderLanding() {
   ${platformBar('<a class="btn secondary small" href="#/login">Agent login</a>')}
   <div class="wrap page">
     <section class="hero">
-      <span class="eyebrow">For UK education agents</span>
+      <span class="eyebrow">For UK education agents &amp; agencies</span>
       <h1>Your own branded student application portal, ready in minutes.</h1>
       <p class="lede">Add your logo and colours, share your link, and review every application and document securely in one place.</p>
       <div class="cta">
-        <a class="btn" href="#/login">Start as an agent</a>
+        <a class="btn" href="#/login">Start as an agent or agency</a>
         <a class="btn secondary" href="#/apply/bright-path">${DEMO ? 'See a sample form' : 'Agent login'}</a>
       </div>
     </section>
     <section class="steps-grid">
-      <div class="card"><div class="num">1</div><h3>Sign up</h3><p>Create your agency account with a one-time email code. No passwords to forget.</p></div>
+      <div class="card"><div class="num">1</div><h3>Sign up</h3><p>Join as an independent agent or a whole agency, using a one-time email code. No passwords to forget.</p></div>
       <div class="card"><div class="num">2</div><h3>Make it yours</h3><p>Upload your logo, choose your colours and add your contact details.</p></div>
       <div class="card"><div class="num">3</div><h3>Share your link</h3><p>Students apply through your branded page and upload their documents.</p></div>
       <div class="card"><div class="num">4</div><h3>Manage applications</h3><p>Review submissions, track progress and keep notes. Your data stays yours alone.</p></div>
@@ -503,7 +503,7 @@ function renderSetup() {
       <h2 style="margin-top:0">Set up your agency</h2>
       <p class="hint">You can change your branding later. Your link name is permanent.</p>
       <form id="setupForm">
-        <label for="aname">Agency name</label>
+        <label for="aname">Agency or business name <span class="hint">— or your own name if you work independently</span></label>
         <input id="aname" required maxlength="120" placeholder="Bright Path Education">
         <label for="aslug">Your link <span class="hint">— lowercase letters, numbers and dashes</span></label>
         <input id="aslug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" minlength="3" maxlength="50" placeholder="bright-path">
